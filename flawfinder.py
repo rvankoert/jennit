@@ -1,6 +1,8 @@
 import hashlib
 import os
 import subprocess
+import shutil
+import sys
 
 import cv2
 import pandas as pd
@@ -10,7 +12,6 @@ import numpy as np
 import argparse
 from tqdm import tqdm
 from concurrent.futures import ThreadPoolExecutor, as_completed
-
 
 def calculate_and_save_histogram_image(cv2_image, image_path, output_dir):
     """
@@ -96,9 +97,12 @@ def extract_bounding_box_and_normalize_angle(binary_image):
     return box, angle
 
 
-def find_image_files(directory):
-    image_extensions = ('.jpg', '.jpeg', '.bmp', '.gif', '.tiff', '.jp2')
+def find_image_files(directory, depth=3):
+    image_extensions = ('.jpg', '.jpeg', '.bmp', '.gif', '.tiff', '.jp2', '.png')
     for root, _, files in os.walk(directory):
+        # Check if the current directory is within the specified depth
+        if root[len(directory):].count(os.sep) >= depth:
+            continue
         for file in files:
             if file.lower().endswith(image_extensions):
                 yield os.path.join(root, file)
@@ -124,10 +128,12 @@ def calculate_compression_ratio(pil_image, image_path):
     except Exception:
         return None
 
+
 def find_black_white_pixels(cv2image, image_path):
     black_pixels = np.where((cv2image == [0, 0, 0]).all(axis=2))
     white_pixels = np.where((cv2image == [255, 255, 255]).all(axis=2))
     return black_pixels, white_pixels
+
 
 def draw_boxes(image_path, black_pixels, white_pixels, output_path):
     image = cv2.imread(image_path)
@@ -137,15 +143,6 @@ def draw_boxes(image_path, black_pixels, white_pixels, output_path):
         cv2.rectangle(image, (x, y), (x+10, y+10), (0, 0, 255), 10)  # Red box with 10-pixel thickness
     cv2.imwrite(output_path, image)
 
-# def is_image_truncated(pil_image):
-#     """
-#     Check if an image is truncated.
-#     """
-#     try:
-#         pil_image.load()  # Fully load the image to check for truncation
-#         return False
-#     except (IOError, OSError):
-#         return True
 
 def is_image_overexposed(cv2image, image_path, threshold=70):
     """
@@ -342,16 +339,58 @@ def is_image_valid(pil_image):
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Process images to extract metadata and annotate black/white pixels.')
-    parser.add_argument('--input_dir', type=str, required=True, help='Directory to search for images')
-    parser.add_argument('--output_excel', type=str, required=True, help='Path to save the Excel file')
-    parser.add_argument('--output_dir', type=str, required=True, help='Directory to save annotated images')
-    parser.add_argument('--threads', type=int, default=16, help='Number of threads to use')
-    parser.add_argument('--pixels_threshold', type=int, default=5, help='Threshold for black/white pixels to annotate')
+    # Check if ImageMagick's identify is available
+    if shutil.which("identify") is None:
+        print(
+            "Error: ImageMagick is not installed or 'identify' is not in your PATH.\n"
+            "Install it on Linux with:\n"
+            "  sudo apt-get install imagemagick\n"
+            "or see https://imagemagick.org/script/download.php"
+        )
+        sys.exit(1)
+    parser = argparse.ArgumentParser(
+        description='Analyze scanned images for flaws, extract metadata, and annotate images with detected black/white pixels.'
+    )
+    parser.add_argument(
+        '--input_dir',
+        type=str,
+        required=True,
+        help='Path to the directory containing input images to be analyzed.'
+    )
+    parser.add_argument(
+        '--output_excel',
+        type=str,
+        required=True,
+        help='Path to the Excel file where extracted metadata will be saved.'
+    )
+    parser.add_argument(
+        '--output_dir',
+        type=str,
+        required=True,
+        help='Directory where annotated images and analysis results will be stored.'
+    )
+    parser.add_argument(
+        '--threads',
+        type=int,
+        default=16,
+        help='Number of parallel threads to use for image processing (default: 16).'
+    )
+    parser.add_argument(
+        '--pixels_threshold',
+        type=int,
+        default=5,
+        help='Minimum number of black or white pixels required to annotate an image (default: 5).'
+    )
+    parser.add_argument(
+        '--depth',
+        type=int,
+        default=3,
+        help='Depth of the directory structure to search for images (default: 3).'
+    )
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
-    image_files = list(find_image_files(args.input_dir))
+    image_files = list(find_image_files(args.input_dir, args.depth))
     results = []
 
     with ThreadPoolExecutor(max_workers=args.threads) as executor:
