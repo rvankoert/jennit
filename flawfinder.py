@@ -284,7 +284,7 @@ def process_image(image_path, output_dir, pixels_threshold):
 
     return {
         "File Path": image_path,
-        "Is Valid": is_valid,
+        "Is Valid": bool(is_valid),
         # "Is Truncated": is_truncated,
         "Is Overexposed": is_overexposed,
         "File Size (bytes)": file_size,
@@ -294,8 +294,8 @@ def process_image(image_path, output_dir, pixels_threshold):
         "DPI": exif_data.get('DPI', (None, None)) if is_valid else (None, None),
         "Compression Ratio": compression_ratio,
         "JPEG Quality": jpeg_quality,
-        "Contains Black Pixels": black_pixels[0].size > 0 if is_valid else False,
-        "Contains White Pixels": white_pixels[0].size > 0 if is_valid else False,
+        "Black Pixels": black_pixels[0].size,
+        "White Pixels": white_pixels[0].size,
         "Angle": angle if is_valid else None,
         "Color Profile": color_profile,
         "Color Histograms": color_histograms,
