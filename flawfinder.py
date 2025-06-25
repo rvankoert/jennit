@@ -85,7 +85,7 @@ def extract_bounding_box_and_normalize_angle(binary_image):
     # Get the minimum area rectangle
     rect = cv2.minAreaRect(largest_contour)
     box = cv2.boxPoints(rect)
-    box = np.int0(box)
+    box = box.astype(np.intp)
 
     # Normalize the angle
     angle = rect[2]
