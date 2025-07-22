@@ -7,8 +7,8 @@ Jennit finds flaws in scanned documents.
 Clone the repository and install the dependencies:
 
 ```bash
-git clone git@github.com:rvankoert/jennie.git
-cd jennie
+git clone git@github.com:rvankoert/jennit.git
+cd jennit
 pip install -r requirements.txt
 ```
 
