@@ -1,6 +1,6 @@
-# jennie
+# jennit
 
-Jennie finds flaws in scanned documents.
+Jennit finds flaws in scanned documents.
 
 ## Installation
 
