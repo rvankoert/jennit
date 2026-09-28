@@ -13,6 +13,11 @@ import argparse
 from tqdm import tqdm
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+# Same shape as the (rows, cols) tuple returned by np.where() on a 2D mask.
+# Used as the stand-in for black/white pixel indices when an image is invalid,
+# so indexing (e.g. black_pixels[0].size) keeps working and reports 0.
+_EMPTY_PIXELS = (np.empty(0, dtype=np.int64), np.empty(0, dtype=np.int64))
+
 def calculate_and_save_histogram_image(cv2_image, image_path, output_dir):
     """
     Calculate color histograms for an image and save them as an image.
@@ -135,13 +140,35 @@ def find_black_white_pixels(cv2image, image_path):
     return black_pixels, white_pixels
 
 
-def draw_boxes(image_path, black_pixels, white_pixels, output_path):
-    image = cv2.imread(image_path)
-    for y, x in zip(*black_pixels):
-        cv2.rectangle(image, (x, y), (x+10, y+10), (0, 255, 0), 10)  # Green box with 10-pixel thickness
-    for y, x in zip(*white_pixels):
-        cv2.rectangle(image, (x, y), (x+10, y+10), (0, 0, 255), 10)  # Red box with 10-pixel thickness
-    cv2.imwrite(output_path, image)
+def draw_boxes(image, black_pixels, white_pixels, output_path):
+    """
+    Annotate an image by highlighting pure-black (green) and pure-white (red) pixels.
+
+    The previous implementation drew one thick cv2.rectangle per flagged pixel,
+    which took minutes on large scans and produced solid color blocks. Building a
+    mask and dilating it scales with the image size instead of the number of
+    flagged pixels.
+
+    Args:
+        image (numpy.ndarray): The already-decoded input image in BGR format.
+        black_pixels (tuple): (rows, cols) index arrays of pure-black pixels.
+        white_pixels (tuple): (rows, cols) index arrays of pure-white pixels.
+        output_path (str): Path to save the annotated image.
+    """
+    if image is None:
+        raise ValueError("Image not found or could not be loaded")
+
+    # 1 = pure-black pixel, 2 = pure-white pixel. Assigning white after black
+    # keeps white on top where the two overlap, matching the old behaviour.
+    mask = np.zeros(image.shape[:2], np.uint8)
+    mask[black_pixels[0], black_pixels[1]] = 1
+    mask[white_pixels[0], white_pixels[1]] = 2
+    dilated = cv2.dilate(mask, np.ones((11, 11), np.uint8))  # ~10-px box around each pixel
+
+    annotated = image.copy()
+    annotated[dilated == 1] = (0, 255, 0)   # Green where black pixels were
+    annotated[dilated == 2] = (0, 0, 255)   # Red where white pixels were
+    cv2.imwrite(output_path, annotated)
 
 
 def is_image_overexposed(cv2image, image_path, threshold=70):
@@ -260,27 +287,47 @@ def get_jpeg_quality_with_identify(image_path):
 
 
 def process_image(image_path, output_dir, pixels_threshold):
-    cv2image = cv2.imread(image_path)
-    pil_image = Image.open(image_path)
-    is_valid = is_image_valid(pil_image)
+    """
+    Run all per-image measurements and return one result row.
+
+    Every substep is isolated by safe(), so a single failure (e.g. "No contours
+    found" on a pure-black image, or a file PIL cannot parse) is recorded in the
+    "Errors" column instead of raising and dropping the whole row.
+    """
+    errors = []
+
+    def safe(name, fn, default=None):
+        try:
+            return fn()
+        except Exception as exc:
+            errors.append(f"{name}: {exc}")
+            return default
+
+    cv2image = safe("cv2 load", lambda: cv2.imread(image_path))
+    pil_image = safe("PIL load", lambda: Image.open(image_path))
+    is_valid = is_image_valid(pil_image) if pil_image is not None else False
     # is_truncated = is_image_truncated(pil_image)
-    is_overexposed = is_image_overexposed(cv2image, image_path) if is_valid else None
-    exif_data = extract_exif(pil_image, image_path) if is_valid else {}
-    compression_ratio = calculate_compression_ratio(pil_image, image_path) if is_valid and image_path.lower().endswith(('.jpg', '.jpeg')) else None
-    jpeg_quality = get_jpeg_quality_with_identify(image_path) if is_valid and image_path.lower().endswith(('.jpg', '.jpeg')) else None
-    black_pixels, white_pixels = find_black_white_pixels(cv2image, image_path) if is_valid else ([], [])
-    file_size = calculate_file_size(image_path)
-    md5sum = calculate_md5(image_path)
-    sha512 = calculate_sha512(image_path)
-    box, angle = extract_bounding_box_and_normalize_angle(binarize_image(cv2image, image_path)) if is_valid else (None, None)
-    color_profile = calculate_color_profile(cv2image, image_path, output_dir) if is_valid else None
-    color_histograms = calculate_color_histograms(cv2image, image_path, output_dir) if is_valid else None
+    is_jpeg = image_path.lower().endswith(('.jpg', '.jpeg'))
+    is_overexposed = safe("overexposure check", lambda: is_image_overexposed(cv2image, image_path)) if is_valid else None
+    exif_data = safe("EXIF", lambda: extract_exif(pil_image, image_path), default={}) if is_valid else {}
+    compression_ratio = safe("compression ratio", lambda: calculate_compression_ratio(pil_image, image_path)) if is_valid and is_jpeg else None
+    jpeg_quality = safe("JPEG quality", lambda: get_jpeg_quality_with_identify(image_path)) if is_valid and is_jpeg else None
+    if is_valid:
+        black_pixels, white_pixels = safe("black/white pixels", lambda: find_black_white_pixels(cv2image, image_path), default=(_EMPTY_PIXELS, _EMPTY_PIXELS))
+    else:
+        black_pixels, white_pixels = _EMPTY_PIXELS, _EMPTY_PIXELS
+    file_size = safe("file size", lambda: calculate_file_size(image_path))
+    md5sum = safe("MD5", lambda: calculate_md5(image_path))
+    sha512 = safe("SHA-512", lambda: calculate_sha512(image_path))
+    box, angle = safe("bounding box", lambda: extract_bounding_box_and_normalize_angle(binarize_image(cv2image, image_path)), default=(None, None)) if is_valid else (None, None)
+    color_profile = safe("color profile", lambda: calculate_color_profile(cv2image, image_path, output_dir)) if is_valid else None
+    color_histograms = safe("color histograms", lambda: calculate_color_histograms(cv2image, image_path, output_dir)) if is_valid else None
 
     # calculate_and_save_histogram_image(cv2image, image_path, output_dir) if is_valid else None
 
     if is_valid and (black_pixels[0].size > pixels_threshold or white_pixels[0].size > pixels_threshold):
         output_path = os.path.join(output_dir, f"annotated_{os.path.basename(image_path)}")
-        draw_boxes(image_path, black_pixels, white_pixels, output_path)
+        safe("annotation", lambda: draw_boxes(cv2image, black_pixels, white_pixels, output_path))
 
     return {
         "File Path": image_path,
@@ -299,6 +346,7 @@ def process_image(image_path, output_dir, pixels_threshold):
         "Angle": angle if is_valid else None,
         "Color Profile": color_profile,
         "Color Histograms": color_histograms,
+        "Errors": "; ".join(errors),
     }
 
 def calculate_file_size(image_path):
