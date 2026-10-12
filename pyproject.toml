@@ -1,0 +1,26 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "jennit"
+version = "0.2.0"
+description = "Find flaws in scanned documents: CLI, batch API, web UI"
+requires-python = ">=3.10"
+dependencies = [
+    "opencv-python", "pandas", "Pillow", "openpyxl", "numpy", "tqdm",
+    "fastapi>=0.115", "uvicorn[standard]", "python-multipart>=0.0.9",
+    "asyncpg>=0.29", "requests",
+]
+
+[project.optional-dependencies]
+parquet = ["pyarrow"]
+dev = ["pytest", "httpx"]
+
+[project.scripts]
+jennit = "jennit.cli.analyze:main"
+jennit-upload = "jennit.cli.upload:main"
+jennit-server = "jennit.server:run"
+
+[tool.hatch.build.targets.wheel]
+packages = ["jennit"]

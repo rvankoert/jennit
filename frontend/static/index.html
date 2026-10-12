@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>jennit — batch scan</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 2rem auto; max-width: 60rem; color: #222; }
+  .box { border: 1px solid #ccc; border-radius: 8px; padding: 1rem; margin-bottom: 1rem; }
+  #drop { border: 2px dashed #888; border-radius: 8px; padding: 2rem; text-align: center; color: #555; }
+  #drop.over { border-color: #2a7; background: #effaf3; }
+  table { border-collapse: collapse; width: 100%; }
+  th, td { border-bottom: 1px solid #ddd; padding: .4rem .6rem; text-align: left; }
+  button, input[type=submit] { padding: .4rem 1rem; border-radius: 6px; border: 1px solid #888; background: #f5f5f5; cursor: pointer; }
+  input, select { padding: .35rem; }
+  .ok { color: #18a; } .err { color: #a33; }
+</style>
+</head>
+<body>
+<h1>jennit — batch scan</h1>
+
+<div class="box">
+  <h2>Upload a batch</h2>
+  <p>
+    <label>Batch name: <input id="name" value="batch-" size="24"></label>
+    <label>API token (if configured): <input id="token" type="password" size="24"></label>
+  </p>
+  <div id="drop">Drag &amp; drop a folder or images here,<br>
+    or <label class="ok">select folder<input type="file" id="dir" webkitdirectory multiple hidden></label>
+    &nbsp;/&nbsp;
+    <label class="ok">select files<input type="file" id="files" multiple hidden></label>
+  </div>
+  <progress id="bar" max="0" value="0" style="width:100%"></progress>
+  <div id="log" style="max-height:12rem;overflow:auto;font-family:monospace;font-size:.8rem"></div>
+</div>
+
+<div class="box">
+  <h2>Batches</h2>
+  <div id="batch-list"><p>Loading…</p></div>
+</div>
+
+<script>
+const API = "/api/v1";
+const $ = (id) => document.getElementById(id);
+const token = () => $("token").value.trim();
+const headers = () => {
+  const h = {};
+  const t = token();
+  if (t) h["Authorization"] = "Bearer " + t;
+  return h;
+};
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => (
+  { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
+));
+$("name").value = "batch-" +
+  new Date().toISOString().replace(/[-:TZ.]/g, "").slice(0, 12);
+function log(msg, cls) {
+  const d = document.createElement("div");
+  if (cls) d.className = cls;
+  d.textContent = msg;
+  $("log").appendChild(d);
+  $("log").scrollTop = $("log").scrollHeight;
+}
+async function loadBatches() {
+  const el = $("batch-list");
+  try {
+    const r = await fetch(API + "/batches", {headers: headers()});
+    if (!r.ok) throw new Error(r.status + " " + r.statusText);
+    const batches = await r.json();
+    if (!batches.length) { el.innerHTML = "<p>No batches yet.</p>"; return; }
+    const t = token();
+    const rows = batches.map((b) => {
+      let href = "/batches/" + b.id;
+      if (t) href += "?t=" + encodeURIComponent(t);
+      const created = b.created_at
+        ? new Date(b.created_at).toLocaleString() : "";
+      return "<tr><td>" + esc(b.name) + "</td><td>" + esc(b.status) +
+        "</td><td>" + b.uploaded_count + "</td><td>" +
+        b.processed_count + "</td><td>" + b.failed_count + "</td>" +
+        "<td>" + esc(created) + "</td><td><a href='" + esc(href) +
+        "'>open</a></td></tr>";
+    });
+    el.innerHTML =
+      "<table><tr><th>Name</th><th>Status</th><th>Uploaded</th><th>Processed</th>" +
+      "<th>Failed</th><th>Created</th><th></th></tr>" + rows.join("") +
+      "</table>";
+  } catch (e) {
+    el.innerHTML = '<p class="err">batch list unavailable: ' +
+      esc(e.message) + "</p>";
+  }
+}
+loadBatches();
+$("token").addEventListener("change", loadBatches);
+let queue = [], batchId = null, done = 0, total = 0, inflight = 0;
+
+function enqueue(files) {
+  for (const f of files) {
+    const rel = f.webkitRelativePath || "";
+    let dir = rel ? rel.slice(0, rel.lastIndexOf("/")) : (f.__dir || "");
+    dir = dir.replace(/\/+$/, "");
+    queue.push({file: f, dir: dir});
+  }
+  total += queue.length;
+  $("bar").max = total;
+  pump();
+}
+
+async function pump() {
+  while (inflight < 3 && queue.length) {
+    const item = queue.shift();
+    inflight++;
+    uploadOne(item)
+      .then(() => log("uploaded " + item.file.name))
+      .catch(e => log("FAIL " + item.file.name + ": " + e.message, "err"))
+      .finally(() => { inflight--; done++; $("bar").value = done; pump(); });
+  }
+  if (!queue.length && inflight === 0 && batchId) {
+    try {
+      const r = await fetch(API + "/batches/" + batchId + "/complete",
+                            {method: "POST", headers: headers()});
+      if (!r.ok) throw new Error(r.status + " " + r.statusText);
+      const b = await r.json();
+      log("complete: status=" + b.status, "ok");
+      log("batch page: /batches/" + batchId);
+      if (b.status !== "completed") setTimeout(() => location.reload(), 1500);
+    } catch (e) {
+      log("complete failed: " + e.message, "err");
+    }
+  }
+}
+
+async function uploadOne(item) {
+  const fd = new FormData();
+  fd.append("file", item.file, item.file.name);
+  const qs = item.dir ? "?path=" + encodeURIComponent(item.dir) : "";
+  const r = await fetch(API + "/batches/" + batchId + "/files" + qs,
+                        {method: "POST", body: fd, headers: headers()});
+  if (!r.ok) {
+    let detail = r.statusText;
+    try { detail = (await r.json()).detail; } catch (e) {}
+    throw new Error(r.status + " " + detail);
+  }
+}
+
+async function start(files) {
+  if (!files.length) return;
+  if (!batchId) {
+    const name = $("name").value.trim() || "batch";
+    const fd = new FormData();
+    fd.append("name", name);
+    const r = await fetch(API + "/batches",
+                          {method: "POST", body: fd, headers: headers()});
+    if (!r.ok) { log("create batch failed: " + r.status, "err"); return; }
+    batchId = (await r.json()).id;
+    log("batch created: " + batchId, "ok");
+  }
+  enqueue(files);
+}
+
+$("dir").addEventListener("change", e => start(e.target.files));
+$("files").addEventListener("change", e => start(e.target.files));
+
+const drop = $("drop");
+["dragenter", "dragover"].forEach(ev =>
+  drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add("over"); }));
+["dragleave", "drop"].forEach(ev =>
+  drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove("over"); }));
+drop.addEventListener("drop", async e => {
+  const files = [];
+  for (const it of e.dataTransfer.items) {
+    const entry = it.webkitGetAsEntry && it.webkitGetAsEntry();
+    if (entry) files.push(...await readEntry(entry, ""));
+    else {
+      const f = it.getAsFile();
+      if (f) files.push(f);
+    }
+  }
+  start(files);
+});
+
+async function readEntry(entry, dir) {
+  if (entry.isFile) {
+    const f = await new Promise(res => entry.file(res, () => res(null)));
+    if (f) { f.__dir = dir; return [f]; }
+    return [];
+  }
+  const out = [];
+  const reader = entry.createReader();
+  let entries;
+  do {
+    entries = await new Promise(res => reader.readEntries(res, () => res([])));
+    for (const child of entries)
+      out.push(...await readEntry(child, dir + entry.name + "/"));
+  } while (entries.length);
+  return out;
+}
+</script>
+</body>
+</html>

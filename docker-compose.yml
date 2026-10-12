@@ -1,0 +1,56 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: jennit
+      POSTGRES_PASSWORD: jennit
+      POSTGRES_DB: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - jennit_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U jennit"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
+  # FastAPI batch API + analysis pipeline (OpenCV, ImageMagick)
+  backend:
+    build: .
+    environment:
+      JENNIT_DB_DSN: postgresql://jennit:jennit@postgres:5432/jennit
+      JENNIT_SPOOL_ROOT: /spool
+      JENNIT_DATA_ROOT: /data
+      JENNIT_HOST: "0.0.0.0"
+      JENNIT_PORT: "8000"
+      JENNIT_THREADS: ${JENNIT_THREADS:-16}
+      JENNIT_PIXELS_THRESHOLD: ${JENNIT_PIXELS_THRESHOLD:-5}
+      JENNIT_MAX_UPLOAD_BYTES: ${JENNIT_MAX_UPLOAD_BYTES:-2147483648}
+      JENNIT_KEEP_INTERMEDIATES: ${JENNIT_KEEP_INTERMEDIATES:-false}
+      JENNIT_API_TOKEN: ${JENNIT_API_TOKEN:-}
+    ports:
+      - "8000:8000"
+    volumes:
+      - jennit_spool:/spool
+      - jennit_data:/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # static web UI (nginx) + reverse proxy for /api/* to the backend
+  frontend:
+    build: ./frontend
+    ports:
+      - "8080:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  jennit_pgdata:
+  jennit_spool:
+  jennit_data:

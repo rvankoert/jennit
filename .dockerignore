@@ -1,0 +1,12 @@
+.git
+.venv
+__pycache__/
+**/__pycache__/
+*.py[cod]
+.pytest_cache
+spool/
+data/
+plans/
+tests/
+.env
+.env.example

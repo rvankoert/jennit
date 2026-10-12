@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>jennit — batch</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 2rem auto; max-width: 60rem; color: #222; }
+  table { border-collapse: collapse; width: 100%; }
+  th, td { border-bottom: 1px solid #ddd; padding: .4rem .6rem; text-align: left; }
+  button { padding: .4rem 1rem; border-radius: 6px; border: 1px solid #888; background: #f5f5f5; cursor: pointer; }
+  .err { color: #a33; }
+</style>
+</head>
+<body>
+<p><a href="/">← back</a></p>
+<h1>Batch <span id="name">…</span></h1>
+<div id="view"><p>Loading…</p></div>
+<script>
+const API = "/api/v1";
+// batch id comes from the URL path (/batches/<uuid>); the page is static
+const match = location.pathname.match(/\/batches\/([0-9a-fA-F-]{36})/);
+const batchId = match ? match[1] : null;
+const t = new URLSearchParams(location.search).get("t") || "";
+const headers = () => t ? {"Authorization": "Bearer " + t} : {};
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => (
+  { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
+));
+async function api(path, opts) {
+  opts = opts || {};
+  opts.headers = Object.assign({}, headers(), opts.headers || {});
+  const r = await fetch(API + path, opts);
+  if (!r.ok) {
+    const e = new Error(path + " -> " + r.status);
+    e.status = r.status;
+    throw e;
+  }
+  return r.json();
+}
+function download(path, name) {
+  return fetch(API + path, {headers: headers()})
+    .then((r) => {
+      if (!r.ok) throw new Error(path + " -> " + r.status);
+      return r.blob();
+    })
+    .then((blob) => {
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = name;
+      a.click();
+      URL.revokeObjectURL(a.href);
+    })
+    .catch((e) => alert("download failed: " + e.message));
+}
+function renderFolders(folders) {
+  $("folders").innerHTML = folders.map((f) =>
+    "<tr><td>" + esc(f.folder) + "</td><td>" + f.total + "</td>" +
+    "<td>" + f.done + "</td><td>" + f.failed + "</td><td>" +
+    f.in_flight + "</td></tr>"
+  ).join("");
+}
+let timer = null;
+function startPolling() {
+  if (timer) return;
+  timer = setInterval(async () => {
+    try {
+      const b = await api("/batches/" + batchId);
+      $("status").textContent = b.status;
+      $("up").textContent = b.uploaded_count;
+      $("proc").textContent = b.processed_count;
+      $("fail").textContent = b.failed_count;
+      renderFolders(b.folders);
+      if (b.status === "completed") {
+        clearInterval(timer);
+        timer = null;
+        location.reload();
+      }
+    } catch (e) { /* keep polling */ }
+  }, 2000);
+}
+function render(b) {
+  $("name").textContent = b.name;
+  document.title = "jennit — " + b.name;
+  $("view").innerHTML =
+    '<p>Status: <b id="status">' + esc(b.status) + "</b> |" +
+    ' Uploaded: <span id="up">' + b.uploaded_count + "</span> |" +
+    ' Processed: <span id="proc">' + b.processed_count + "</span> |" +
+    ' Failed: <span id="fail">' + b.failed_count + "</span></p>" +
+    "<table><tr><th>Folder</th><th>Total</th><th>Done</th><th>Failed</th>" +
+    '<th>In flight</th></tr><tbody id="folders"></tbody></table>' +
+    "<p>" +
+    '<button id="btn-report">Download report (xlsx)</button> ' +
+    '<button id="btn-csv">Export CSV</button> ' +
+    '<button id="btn-parquet">Export Parquet</button> ' +
+    '<button id="btn-regen">Regenerate report</button> ' +
+    '<button id="btn-delete">Delete batch</button>' +
+    "</p>";
+  renderFolders(b.folders);
+  $("btn-report").onclick = () =>
+    download("/batches/" + batchId + "/report", "batch_report.xlsx");
+  $("btn-csv").onclick = () =>
+    download("/batches/" + batchId + "/export?format=csv", "scans.csv");
+  $("btn-parquet").onclick = () =>
+    download("/batches/" + batchId + "/export?format=parquet", "scans.parquet");
+  $("btn-regen").onclick = async () => {
+    const r = await fetch(API + "/batches/" + batchId + "/report",
+                          {method: "POST", headers: headers()});
+    alert(r.ok ? "report regenerated" : "regenerate failed: " + r.status);
+    if (r.ok) location.reload();
+  };
+  $("btn-delete").onclick = async () => {
+    if (!confirm("Delete this batch (rows, report, exports, artifacts)?")) return;
+    const r = await fetch(API + "/batches/" + batchId,
+                          {method: "DELETE", headers: headers()});
+    if (r.ok) location.href = "/"; else alert("delete failed: " + r.status);
+  };
+  if (b.status === "uploading" || b.status === "processing") startPolling();
+}
+(async () => {
+  if (!batchId) {
+    $("view").innerHTML = '<p class="err">unknown batch</p>';
+    return;
+  }
+  try {
+    render(await api("/batches/" + batchId));
+  } catch (e) {
+    $("view").innerHTML = '<p class="err">' +
+      (e.status === 404 ? "unknown batch"
+        : "load failed: " + esc(e.message)) + "</p>";
+  }
+})();
+</script>
+</body>
+</html>
